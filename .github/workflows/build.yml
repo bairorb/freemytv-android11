@@ -1,0 +1,74 @@
+name: Free My TV Android 11 - TCL G07
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK build tools
+        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
+      - name: Get original Free My TV source
+        run: |
+          git clone --depth 1 https://github.com/simbasjungles/free-my-tv.git free-my-tv
+          git -C free-my-tv rev-parse HEAD
+
+      - name: Adapt minimum SDK to Android 11 (experimental)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("free-my-tv/build.sh")
+          text=p.read_text()
+          for old,new in [("--min-sdk-version 31","--min-sdk-version 30"),("--min-api 31","--min-api 30")]:
+              if old not in text:
+                  raise SystemExit(f"Upstream build.sh changed, missing {old!r}")
+              text=text.replace(old,new)
+          p.write_text(text)
+          cfg=Path("free-my-tv/config.example.properties")
+          if cfg.exists():
+              cfg.write_text(cfg.read_text().replace("tmdb_region=US","tmdb_region=MX"))
+          PY
+
+      - name: Build and sign FreeMyTV.apk
+        working-directory: free-my-tv
+        run: bash build.sh
+
+      - name: Verify APK (Android 11, API 30)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp free-my-tv/FreeMyTV.apk release/FreeMyTV-Android11-TCL-G07-EXPERIMENTAL.apk
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          "$BT/aapt" dump badging release/*.apk | tee release/apk-info.txt
+          grep -q "sdkVersion:'30'" release/apk-info.txt
+          "$BT/apksigner" verify --verbose release/*.apk
+          unzip -t release/*.apk
+          sha256sum release/*.apk > release/SHA256SUMS.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeMyTV-Android11-TCL-G07-EXPERIMENTAL
+          path: release/
+          retention-days: 30
+          if-no-files-found: error
