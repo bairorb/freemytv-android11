@@ -13,6 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Check out Android 11 patch
+        uses: actions/checkout@v4
+
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
@@ -51,66 +54,7 @@ jobs:
           PY
 
       - name: Allow private TMDB key configuration from atvTools
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          recs = Path("free-my-tv/app/src/io/freemytv/Recs.java")
-          s = recs.read_text()
-          def sub_one(old, new):
-              global s
-              if s.count(old) != 1:
-                  raise SystemExit("Unexpected upstream Recs.java layout: " + old[:80])
-              s = s.replace(old, new)
-          sub_one(
-              "    static boolean hasKey(Context c) {\n        return !Config.TMDB_KEY.trim().isEmpty();\n    }",
-              """    /** User-supplied key stays in the TV's private app storage, not in the public APK. */
-              private static String tmdbKey(Context c) {
-                  String key = c.getSharedPreferences("tmdb_config", Context.MODE_PRIVATE).getString("key", "");
-                  return key.trim().isEmpty() ? Config.TMDB_KEY.trim() : key.trim();
-              }
-
-              static boolean hasKey(Context c) {
-                  return !tmdbKey(c).isEmpty();
-              }""".replace("              ", "    ")
-          )
-          sub_one("long stamp = Config.TMDB_KEY.hashCode() * 31L + REGION.hashCode();",
-                  "long stamp = tmdbKey(context).hashCode() * 31L + REGION.hashCode();")
-          sub_one("String key = Config.TMDB_KEY.trim();", "String key = tmdbKey(context);")
-          recs.write_text(s)
-
-          activity = Path("free-my-tv/app/src/io/freemytv/SettingsActivity.java")
-          s = activity.read_text()
-          def change(old, new):
-              global s
-              if s.count(old) != 1:
-                  raise SystemExit("Unexpected upstream SettingsActivity.java layout: " + old[:80])
-              s = s.replace(old, new)
-          change("        Ui.init(this);\n        view = new SettingsView(this);",
-                 "        Ui.init(this);\n        saveTmdbKeyFromIntent(getIntent());\n        view = new SettingsView(this);")
-          change("        setIntent(intent);\n    }\n\n    @Override protected void onPause()",
-                 "        setIntent(intent);\n        saveTmdbKeyFromIntent(intent);\n    }\n\n    @Override protected void onPause()")
-          anchor = "    @Override protected void onResume() {"
-          method = """    /** ADB: am start -n io.freemytv/.SettingsActivity --es tmdb_api_key KEY
-     *  Key is stored in app-private SharedPreferences, never uploaded to GitHub. */
-    private void saveTmdbKeyFromIntent(Intent intent) {
-        if (intent == null || !intent.hasExtra("tmdb_api_key")) return;
-        String key = intent.getStringExtra("tmdb_api_key");
-        intent.removeExtra("tmdb_api_key");
-        if (key == null || !key.trim().matches("[A-Za-z0-9._-]{20,1024}")) {
-            AppLog.w("TMDB key was rejected: invalid format");
-            return;
-        }
-        getSharedPreferences("tmdb_config", MODE_PRIVATE).edit().putString("key", key.trim()).commit();
-        AppLog.w("TMDB key saved locally");
-        Recs.get(this).refreshIfStale();
-    }
-
-"""
-          change(anchor, method + anchor)
-          activity.write_text(s)
-          PY
+        run: python3 scripts/patch_tmdb.py
 
       - name: Build and sign FreeMyTV.apk
         working-directory: free-my-tv
